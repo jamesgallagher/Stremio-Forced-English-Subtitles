@@ -4,7 +4,7 @@ const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
 
-const VERSION = '1.0.4';
+const VERSION = '1.0.6';
 
 const app = express();
 app.use(cors());
@@ -12,6 +12,13 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 const PORT = process.env.PORT || 7000;
+const APP_DIR = __dirname;
+
+// Serve static assets (favicon, icon)
+app.use('/favicon.ico', (req, res) => res.sendFile(path.join(APP_DIR, 'favicon.ico')));
+app.use('/favicon.png', (req, res) => res.sendFile(path.join(APP_DIR, 'favicon.png')));
+app.use('/icon.png',    (req, res) => res.sendFile(path.join(APP_DIR, 'icon.png')));
+app.use('/icon.svg',    (req, res) => res.sendFile(path.join(APP_DIR, 'icon.svg')));
 const CONFIG_DIR = process.env.CONFIG_DIR || __dirname;
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 
@@ -42,16 +49,11 @@ function getManifest(baseUrl) {
       'Provides English forced subtitles (foreign dialogue only) when available. ' +
       'Returns nothing if no forced subtitle exists — effectively disabling subtitles ' +
       'for fully-English content.',
-    resources: [
-      {
-        name: 'subtitles',
-        types: ['movie', 'series'],
-        idPrefixes: ['tt'],
-      }
-    ],
+    resources: ['subtitles'],
     types: ['movie', 'series'],
     idPrefixes: ['tt'],
     catalogs: [],
+    logo: baseUrl ? `${baseUrl}/icon.png` : undefined,
     behaviorHints: { configurable: true, configurationRequired: !getApiKey() },
     configureUrl: baseUrl ? `${baseUrl}/configure` : undefined,
   };
@@ -397,6 +399,9 @@ function landingPage(baseUrl, hasKey) {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <link rel="apple-touch-icon" href="/icon.png">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>English Forced Subtitles — Stremio Add-on</title>
   <style>
@@ -606,6 +611,9 @@ function configurePage(baseUrl, hasKey, currentKey) {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <link rel="apple-touch-icon" href="/icon.png">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Configure — English Forced Subtitles</title>
   <style>
@@ -803,6 +811,6 @@ app.listen(PORT, () => {
   console.log(`   Config:   http://127.0.0.1:${PORT}/configure`);
   console.log(`   Manifest: http://127.0.0.1:${PORT}/manifest.json\n`);
   if (!getApiKey()) {
-    console.warn('⚠️  No API key set — visit http://127.0.0.1:${PORT}/configure to add one\n');
+    console.warn(`⚠️  No API key set — visit http://127.0.0.1:${PORT}/configure to add one\n`);
   }
 });
