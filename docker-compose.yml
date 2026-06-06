@@ -1,0 +1,13 @@
+services:
+  stremio-forced-subs:
+    build: .
+    container_name: stremio-forced-subs
+    restart: unless-stopped
+    ports:
+      - "7000:7000"
+    volumes:
+      - ./data:/data
+    environment:
+      - PORT=7000
+      # Optional: set your API key here instead of via the web UI
+      # - OPENSUBTITLES_API_KEY=your_key_here
