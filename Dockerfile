@@ -6,8 +6,12 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install --omit=dev
 
-# Copy app source
+# Copy app source and static assets
 COPY index.js ./
+COPY icon.png ./
+COPY icon.svg ./
+COPY favicon.ico ./
+COPY favicon.png ./
 
 # Config is stored in /data so it can be mapped to a persistent volume
 ENV CONFIG_DIR=/data

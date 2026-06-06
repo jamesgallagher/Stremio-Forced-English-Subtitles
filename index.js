@@ -4,7 +4,7 @@ const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
 
-const VERSION = '1.0.7';
+const VERSION = '1.0.8';
 
 const app = express();
 app.set('trust proxy', 1); // Trust Cloudflare's X-Forwarded-Proto header
@@ -52,7 +52,6 @@ function getManifest(baseUrl) {
       'for fully-English content.',
     resources: ['subtitles'],
     types: ['movie', 'series'],
-    idPrefixes: ['tt'],
     catalogs: [],
     logo: baseUrl ? `${baseUrl}/icon.png` : undefined,
     behaviorHints: { configurable: true, configurationRequired: !getApiKey() },
@@ -390,7 +389,6 @@ function landingPage(baseUrl, hasKey) {
     description: 'Provides English forced subtitles (foreign dialogue only) when available. Returns nothing if no forced subtitle exists.',
     resources: ['subtitles'],
     types: ['movie', 'series'],
-    idPrefixes: ['tt'],
     catalogs: [],
     behaviorHints: { configurable: true },
     configureUrl: `${baseUrl}/configure`,
