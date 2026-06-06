@@ -13,6 +13,7 @@
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "fs": "^0.0.1-security",
-    "node-fetch": "^2.7.0"
+    "node-fetch": "^2.7.0",
+    "stremio-addon-sdk": "*"
   }
 }
