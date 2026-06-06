@@ -4,9 +4,10 @@ const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
 
-const VERSION = '1.0.6';
+const VERSION = '1.0.7';
 
 const app = express();
+app.set('trust proxy', 1); // Trust Cloudflare's X-Forwarded-Proto header
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
