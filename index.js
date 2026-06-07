@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 
-const VERSION = '1.2.5';
+const VERSION = '1.2.6';
 
 // Timestamped logging
 const log  = (...a) => console.log(`[${new Date().toTimeString().slice(0,8)}]`, ...a);
@@ -176,7 +176,7 @@ async function findForcedSubtitle(imdbId, season, episode, type) {
   // Return a URL that points to our own proxy endpoint
   // This fetches a FRESH download URL from OpenSubtitles when Stremio actually requests the file
   // preventing the "expired URL" problem
-  const ourProxyUrl = `${process.env.PUBLIC_URL || 'http://127.0.0.1:7000'}/subs/${fileId}.vtt`;
+  const ourProxyUrl = `${process.env.PUBLIC_URL || 'http://127.0.0.1:7000'}/subs/${fileId}`;
 
   return [{
     id: `forced-en-${fileId}`,
@@ -318,7 +318,7 @@ function srtToVtt(srt) {
 }
 
 // ── Subtitle proxy endpoint ───────────────────────────────────────────────────
-app.get('/subs/:fileId.vtt', async (req, res) => {
+app.get('/subs/:fileId', async (req, res) => {
   const { fileId } = req.params;
   log(`[Proxy] Stremio requested subtitle file for fileId=${fileId}`);
 
