@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 
-const VERSION = '1.1.3';
+const VERSION = '1.1.6';
 const PORT = process.env.PORT || 7000;
 const CONFIG_DIR = process.env.CONFIG_DIR || __dirname;
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
@@ -14,12 +14,43 @@ function loadConfig() {
   try {
     if (fs.existsSync(CONFIG_FILE)) return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
   } catch {}
-  return { apiKey: process.env.OPENSUBTITLES_API_KEY || '' };
+  return { apiKey: process.env.OPENSUBTITLES_API_KEY || '', username: '', password: '', jwtToken: '' };
 }
 function saveConfig(cfg) { fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2)); }
 
 let config = loadConfig();
-function getApiKey() { return config.apiKey || ''; }
+function getApiKey()  { return config.apiKey  || ''; }
+function getUsername(){ return config.username || ''; }
+function getPassword(){ return config.password || ''; }
+function getJwtToken(){ return config.jwtToken || ''; }
+
+// Login to OpenSubtitles and cache the JWT token
+async function ensureLoggedIn() {
+  if (getJwtToken()) return getJwtToken(); // use cached token
+  if (!getUsername() || !getPassword()) return null;
+  try {
+    console.log('[Auth] Logging in to OpenSubtitles...');
+    const res = await fetch('https://api.opensubtitles.com/api/v1/login', {
+      method: 'POST',
+      headers: {
+        'Api-Key': getApiKey(),
+        'Content-Type': 'application/json',
+        'User-Agent': 'StremioForcedSubtitles/1.0',
+      },
+      body: JSON.stringify({ username: getUsername(), password: getPassword() }),
+    });
+    if (!res.ok) { console.error('[Auth] Login failed:', res.status); return null; }
+    const data = await res.json();
+    const token = data.token;
+    if (token) {
+      config.jwtToken = token;
+      saveConfig(config);
+      console.log('[Auth] Login successful, token cached');
+      return token;
+    }
+  } catch (e) { console.error('[Auth] Login error:', e.message); }
+  return null;
+}
 
 // ── Stremio Addon SDK ─────────────────────────────────────────────────────────
 const builder = new addonBuilder({
@@ -36,8 +67,8 @@ builder.defineSubtitlesHandler(async ({ type, id }) => {
   const [imdbId, season, episode] = id.split(':');
   console.log(`[Request] type=${type} id=${id}`);
 
-  if (!getApiKey()) {
-    console.log('  No API key configured — returning empty');
+  if (!getApiKey() || !getUsername() || !getPassword()) {
+    console.log('  Not fully configured (need API key + username + password) — returning empty');
     return { subtitles: [] };
   }
 
@@ -123,21 +154,27 @@ async function findForcedSubtitle(imdbId, season, episode, type) {
   // We fetch it here just to count lines, then discard the URL
   // When Stremio actually needs the subtitle, it hits our /subs/:fileId endpoint
   // which fetches a fresh non-expired URL on demand
+  console.log(`  Fetching download URL for fileId=${fileId}...`);
   const tempUrl = await getDownloadUrl(fileId);
-  if (!tempUrl) return [];
+  if (!tempUrl) {
+    console.log(`  ✗ Failed to get download URL — check credentials and quota`);
+    return [];
+  }
+  console.log(`  Download URL obtained — fetching subtitle to verify line count...`);
 
   const lineCount = await countSubtitleLines(tempUrl);
   if (lineCount === null) {
     console.log(`  ✗ Could not fetch subtitle to verify line count — skipping`);
     return [];
   }
-  console.log(`  Line count: ${lineCount}`);
-  if (lineCount > 150) {
-    console.log(`  ✗ Rejected: too many lines (${lineCount}) — looks like a full subtitle, not forced`);
-    return [];
+  if (lineCount > 500) {
+    console.log(`  ⚠️  Warning: subtitle file is ${lineCount} lines long — possibly not foreign language parts only`);
+  } else if (lineCount > 150) {
+    console.log(`  ⚠️  Warning: subtitle file is ${lineCount} lines long — may contain more than just forced dialogue`);
+  } else {
+    console.log(`  ✓ Line count looks good (${lineCount} lines)`);
   }
-
-  console.log(`  ✓ Verified forced subtitle (${lineCount} lines) — returning track`);
+  console.log(`  Returning track — use subtitle picker to verify it looks correct`);
 
   // Return a URL that points to our own proxy endpoint
   // This fetches a FRESH download URL from OpenSubtitles when Stremio actually requests the file
@@ -157,8 +194,13 @@ async function countSubtitleLines(url) {
     const response = await fetch(url, {
       headers: { 'User-Agent': 'StremioForcedSubtitles/1.0' },
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      console.log(`  ✗ Subtitle fetch failed: HTTP ${response.status}`);
+      return null;
+    }
     const text = await response.text();
+    const sizeKb = (text.length / 1024).toFixed(1);
+    console.log(`  Subtitle file fetched OK (${sizeKb} KB)`);
     // Count non-empty lines that aren't timestamps or sequence numbers
     // SRT format: sequence number, timestamp, text lines, blank line
     const lines = text.split('\n').filter(l => {
@@ -176,17 +218,43 @@ async function countSubtitleLines(url) {
 }
 
 async function getDownloadUrl(fileId) {
+  const token = await ensureLoggedIn();
+  const headers = {
+    'Api-Key': getApiKey(),
+    'Content-Type': 'application/json',
+    'User-Agent': 'StremioForcedSubtitles/1.0',
+  };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
   const response = await fetch('https://api.opensubtitles.com/api/v1/download', {
     method: 'POST',
-    headers: {
-      'Api-Key': getApiKey(),
-      'Content-Type': 'application/json',
-      'User-Agent': 'StremioForcedSubtitles/1.0',
-    },
+    headers,
     body: JSON.stringify({ file_id: fileId }),
   });
-  if (!response.ok) return null;
+
+  if (response.status === 401) {
+    // Token may have expired — clear it and retry once with fresh login
+    console.log('[Auth] Token expired, refreshing...');
+    config.jwtToken = '';
+    saveConfig(config);
+    const newToken = await ensureLoggedIn();
+    if (!newToken) return null;
+    const retry = await fetch('https://api.opensubtitles.com/api/v1/download', {
+      method: 'POST',
+      headers: { ...headers, 'Authorization': `Bearer ${newToken}` },
+      body: JSON.stringify({ file_id: fileId }),
+    });
+    if (!retry.ok) return null;
+    const retryData = await retry.json();
+    return retryData.link || null;
+  }
+
+  if (!response.ok) {
+    console.error('[Download] Failed:', response.status, await response.text());
+    return null;
+  }
   const data = await response.json();
+  console.log(`[Download] Remaining quota: ${data.remaining}`);
   return data.link || null;
 }
 
@@ -218,16 +286,18 @@ app.get('/', (req, res) => {
 // Configure page
 app.get('/configure', (req, res) => {
   const baseUrl = `${req.protocol}://${req.get('host')}`;
-  res.send(configurePage(baseUrl, !!getApiKey(), getApiKey()));
+  res.send(configurePage(baseUrl, !!getApiKey(), getApiKey(), getUsername()));
 });
 
 app.post('/configure', (req, res) => {
-  const { apiKey } = req.body;
-  if (apiKey && apiKey.trim()) {
-    config.apiKey = apiKey.trim();
-    saveConfig(config);
-    console.log('[Config] API key saved');
-  }
+  const { apiKey, username, password } = req.body;
+  if (apiKey && apiKey.trim()) config.apiKey = apiKey.trim();
+  if (username && username.trim()) config.username = username.trim();
+  if (password && password.trim()) config.password = password.trim();
+  // Clear cached JWT so it re-authenticates with new credentials
+  config.jwtToken = '';
+  saveConfig(config);
+  console.log('[Config] Settings saved');
   res.redirect('/configure?saved=1');
 });
 
@@ -250,30 +320,42 @@ app.get('/api/test-key', async (req, res) => {
 // This avoids the expired URL problem with OpenSubtitles temporary download links
 app.get('/subs/:fileId', async (req, res) => {
   const { fileId } = req.params;
-  console.log(`[Proxy] Fresh download request for fileId=${fileId}`);
+  console.log(`[Proxy] Stremio requested subtitle file for fileId=${fileId}`);
 
-  if (!getApiKey()) return res.status(503).send('No API key configured');
+  if (!getApiKey()) {
+    console.log(`[Proxy] ✗ No API key configured`);
+    return res.status(503).send('No API key configured');
+  }
 
   try {
+    console.log(`[Proxy] Fetching fresh download URL from OpenSubtitles...`);
     const downloadUrl = await getDownloadUrl(fileId);
-    if (!downloadUrl) return res.status(404).send('Could not get download URL');
+    if (!downloadUrl) {
+      console.log(`[Proxy] ✗ Could not get download URL — check credentials and quota`);
+      return res.status(404).send('Could not get download URL');
+    }
+    console.log(`[Proxy] Download URL obtained — fetching subtitle file...`);
 
-    // Fetch the actual subtitle file and stream it back
     const subResponse = await fetch(downloadUrl, {
       headers: { 'User-Agent': 'StremioForcedSubtitles/1.0' },
     });
 
-    if (!subResponse.ok) return res.status(502).send('Could not fetch subtitle file');
+    if (!subResponse.ok) {
+      console.log(`[Proxy] ✗ Subtitle file fetch failed: HTTP ${subResponse.status}`);
+      return res.status(502).send('Could not fetch subtitle file');
+    }
 
-    // Forward content type and stream the response
     const contentType = subResponse.headers.get('content-type') || 'text/plain';
+    const contentLength = subResponse.headers.get('content-length');
+    console.log(`[Proxy] ✓ Streaming subtitle to Stremio (type=${contentType}${contentLength ? ', size=' + Math.round(contentLength/1024) + 'KB' : ''})`);
+
     res.setHeader('Content-Type', contentType);
     res.setHeader('Access-Control-Allow-Origin', '*');
     subResponse.body.pipe(res);
 
-    console.log(`[Proxy] Streamed subtitle for fileId=${fileId}`);
+    res.on('finish', () => console.log(`[Proxy] ✓ Subtitle delivery complete for fileId=${fileId}`));
   } catch (e) {
-    console.error(`[Proxy] Error: ${e.message}`);
+    console.error(`[Proxy] ✗ Error: ${e.message}`);
     res.status(500).send('Proxy error');
   }
 });
@@ -424,7 +506,7 @@ function landingPage(baseUrl, hasKey) {
   </script></body></html>`;
 }
 
-function configurePage(baseUrl, hasKey, currentKey) {
+function configurePage(baseUrl, hasKey, currentKey, currentUsername) {
   const maskedKey = currentKey ? currentKey.slice(0, 8) + '•'.repeat(Math.max(0, currentKey.length - 8)) : '';
   return `<!DOCTYPE html><html lang="en"><head>
   <meta charset="UTF-8">
@@ -462,21 +544,38 @@ function configurePage(baseUrl, hasKey, currentKey) {
         <div class="logo-sub">English Forced Subtitles · v${VERSION}</div>
       </div>
     </div>
-    ${hasKey ? '<div class="alert-success">✓ API key is configured. The add-on is active.</div>' : ''}
+    ${(hasKey && currentUsername) ? '<div class="alert-success">✓ Fully configured and ready.</div>' : '<div style="padding:14px 18px;border-radius:10px;font-size:13px;margin-bottom:24px;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.3);color:var(--amber)">⚠️ Enter your OpenSubtitles API key, username and password below.</div>'}
     <div class="card">
-      <div class="card-title">OpenSubtitles API Key</div>
+      <div class="card-title">OpenSubtitles Credentials</div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:20px;line-height:1.6">
+        All three fields are required. Get your API key at
+        <a href="https://www.opensubtitles.com/en/consumers" target="_blank" style="color:var(--accent)">opensubtitles.com/en/consumers</a>.
+        Your username and password are your OpenSubtitles.com login credentials.
+      </p>
       ${hasKey ? `<div class="current-key"><div class="status-dot dot-green"></div>
-        <div><div class="current-key-label">Current key</div><div class="current-key-val">${maskedKey}</div></div></div>` : ''}
+        <div><div class="current-key-label">Current API key</div><div class="current-key-val">${maskedKey}</div></div></div>` : ''}
+      ${currentUsername ? `<div class="current-key"><div class="status-dot dot-green"></div>
+        <div><div class="current-key-label">Username</div><div class="current-key-val">${currentUsername}</div></div></div>` : ''}
       <form method="POST" action="/configure">
         <div class="form-group">
-          <label class="form-label" for="apiKey">${hasKey ? 'Replace API key' : 'Enter your API key'}</label>
+          <label class="form-label" for="apiKey">API Key</label>
           <div class="input-row">
-            <input type="password" id="apiKey" name="apiKey" placeholder="e.g. AbC1dEf2GhI3..." autocomplete="off"/>
+            <input type="password" id="apiKey" name="apiKey" placeholder="Your consumer API key..." autocomplete="off"/>
             <button type="button" class="btn btn-ghost" onclick="const i=document.getElementById('apiKey');i.type=i.type==='password'?'text':'password';this.textContent=i.type==='password'?'Show':'Hide'">Show</button>
           </div>
-          <p class="form-hint">Get a free key at <a href="https://www.opensubtitles.com/en/consumers" target="_blank">opensubtitles.com/en/consumers</a></p>
         </div>
-        <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center">💾 Save API Key</button>
+        <div class="form-group">
+          <label class="form-label" for="username">Username</label>
+          <input type="text" id="username" name="username" placeholder="Your OpenSubtitles.com username" autocomplete="off"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="password">Password</label>
+          <div class="input-row">
+            <input type="password" id="password" name="password" placeholder="Your OpenSubtitles.com password" autocomplete="off"/>
+            <button type="button" class="btn btn-ghost" onclick="const i=document.getElementById('password');i.type=i.type==='password'?'text':'password';this.textContent=i.type==='password'?'Show':'Hide'">Show</button>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center">💾 Save Credentials</button>
       </form>
       <div id="testResult" class="test-result"></div>
       <hr class="divider"/>

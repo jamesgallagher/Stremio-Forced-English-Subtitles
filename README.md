@@ -33,6 +33,26 @@ docker compose up -d
 
 This builds the image and starts the container. The config is saved to `./data/config.json` on your Unraid server.
 
+#### If setting up via the Unraid Docker UI instead of docker-compose
+
+When adding the container manually through the Unraid Docker UI, make sure to configure:
+
+**Port mapping:**
+- Container port: `7000`
+- Host port: `7000`
+- Protocol: `TCP`
+
+**Volume mapping (for persistent config):**
+- Container path: `/data`
+- Host path: `/mnt/user/appdata/stremio-forced-subs/data`
+- Access mode: `Read/Write`
+
+**Environment variable:**
+- Name: `PUBLIC_URL`
+- Value: `https://your-cloudflare-domain.com` (e.g. `https://fes.gallagherhome.au`)
+
+> Without the volume mapping your API key, username and password will be lost every time the container restarts or updates.
+
 ### 3. Set up Cloudflare Tunnel
 
 In Cloudflare Zero Trust dashboard:
@@ -43,8 +63,12 @@ In Cloudflare Zero Trust dashboard:
 
 ### 4. Configure the add-on
 
-Browse to `https://forced-subs.yourdomain.com` and enter your OpenSubtitles API key.  
-Get a free key at [opensubtitles.com/en/consumers](https://www.opensubtitles.com/en/consumers).
+Browse to `https://forced-subs.yourdomain.com/configure` and enter your:
+- **API Key** — from [opensubtitles.com/en/consumers](https://www.opensubtitles.com/en/consumers)
+- **Username** — your OpenSubtitles.com login username
+- **Password** — your OpenSubtitles.com login password
+
+All three are required. The username and password are needed to authenticate downloads.
 
 ### 5. Install in Stremio
 
@@ -89,4 +113,4 @@ git pull
 docker compose up -d --build
 ```
 
-Your config (API key) is preserved in `./data/` and is not affected by updates.
+Your config (API key, username, password) is preserved in `./data/` and is not affected by updates.
