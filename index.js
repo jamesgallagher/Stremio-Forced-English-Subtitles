@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 
-const VERSION = '1.2.7';
+const VERSION = '1.2.8';
 
 // Timestamped logging
 const log  = (...a) => console.log(`[${new Date().toTimeString().slice(0,8)}]`, ...a);
@@ -350,17 +350,15 @@ app.get('/subs/:fileId', async (req, res) => {
     }
 
     const subText = await subResponse.text();
-    log(`[Proxy] ✓ Subtitle received (${(subText.length/1024).toFixed(1)} KB) — converting to VTT`);
+    log(`[Proxy] ✓ Subtitle received (${(subText.length/1024).toFixed(1)} KB) — serving raw SRT`);
 
-    // Convert SRT → VTT and serve directly — same pattern as clockrr addon
-    const vttContent = srtToVtt(subText);
-
-    res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+    // Serve raw SRT — Stremio fetches this via its 127.0.0.1:11470 proxy which converts to VTT
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Content-Length', Buffer.byteLength(vttContent, 'utf8'));
-    res.send(vttContent);
+    res.setHeader('Content-Length', Buffer.byteLength(subText, 'utf8'));
+    res.send(subText);
 
-    log(`[Proxy] ✓ VTT delivered directly for fileId=${fileId}`);
+    log(`[Proxy] ✓ Raw SRT delivered for fileId=${fileId}`);
   } catch (e) {
     logE(`[Proxy] ✗ Error: ${e.message}`);
     res.status(500).send('Proxy error');
