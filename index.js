@@ -1,10 +1,11 @@
 const { addonBuilder, serveHTTP } = require('stremio-addon-sdk');
+const OS = require('opensubtitles.com');
 const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
 
-const VERSION = '1.1.6';
+const VERSION = '1.2.0';
 const PORT = process.env.PORT || 7000;
 const CONFIG_DIR = process.env.CONFIG_DIR || __dirname;
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
@@ -24,30 +25,30 @@ function getUsername(){ return config.username || ''; }
 function getPassword(){ return config.password || ''; }
 function getJwtToken(){ return config.jwtToken || ''; }
 
-// Login to OpenSubtitles and cache the JWT token
+// Build an OpenSubtitles client with current config
+// Called fresh each time so it always uses the latest saved credentials
+function getOSClient() {
+  return new OS({
+    apikey: getApiKey(),
+    useragent: `StremioForcedSubs v${VERSION}`,
+  });
+}
+
+// Login and return a token, caching it in config
 async function ensureLoggedIn() {
-  if (getJwtToken()) return getJwtToken(); // use cached token
+  if (getJwtToken()) return getJwtToken();
   if (!getUsername() || !getPassword()) return null;
   try {
     console.log('[Auth] Logging in to OpenSubtitles...');
-    const res = await fetch('https://api.opensubtitles.com/api/v1/login', {
-      method: 'POST',
-      headers: {
-        'Api-Key': getApiKey(),
-        'Content-Type': 'application/json',
-        'User-Agent': 'StremioForcedSubtitles/1.0',
-      },
-      body: JSON.stringify({ username: getUsername(), password: getPassword() }),
-    });
-    if (!res.ok) { console.error('[Auth] Login failed:', res.status); return null; }
-    const data = await res.json();
-    const token = data.token;
-    if (token) {
-      config.jwtToken = token;
+    const os = getOSClient();
+    const res = await os.login({ username: getUsername(), password: getPassword() });
+    if (res?.token) {
+      config.jwtToken = res.token;
       saveConfig(config);
       console.log('[Auth] Login successful, token cached');
-      return token;
+      return res.token;
     }
+    console.error('[Auth] Login returned no token');
   } catch (e) { console.error('[Auth] Login error:', e.message); }
   return null;
 }
@@ -114,29 +115,20 @@ function isForced(result) {
 }
 
 async function findForcedSubtitle(imdbId, season, episode, type) {
-  const params = new URLSearchParams({
+  const os = getOSClient();
+  const query = {
     imdb_id: imdbId.replace('tt', ''),
     languages: 'en',
     order_by: 'download_count',
     order_direction: 'desc',
-  });
+  };
 
   if (type === 'series' && season && episode) {
-    params.set('season_number', season);
-    params.set('episode_number', episode);
+    query.season_number = season;
+    query.episode_number = episode;
   }
 
-  const response = await fetch(`https://api.opensubtitles.com/api/v1/subtitles?${params}`, {
-    headers: {
-      'Api-Key': getApiKey(),
-      'Content-Type': 'application/json',
-      'User-Agent': 'StremioForcedSubtitles/1.0',
-    },
-  });
-
-  if (!response.ok) throw new Error(`OpenSubtitles API: ${response.status}`);
-
-  const data = await response.json();
+  const data = await os.subtitles(query);
   const results = data.data || [];
 
   if (results.length === 0) { console.log(`  No results from OpenSubtitles`); return []; }
@@ -219,43 +211,40 @@ async function countSubtitleLines(url) {
 
 async function getDownloadUrl(fileId) {
   const token = await ensureLoggedIn();
-  const headers = {
-    'Api-Key': getApiKey(),
-    'Content-Type': 'application/json',
-    'User-Agent': 'StremioForcedSubtitles/1.0',
-  };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const os = getOSClient();
 
-  const response = await fetch('https://api.opensubtitles.com/api/v1/download', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ file_id: fileId }),
-  });
+  try {
+    // Pass token if we have one so it uses authenticated quota (20/day vs 5/day)
+    const opts = { file_id: fileId };
+    if (token) opts.token = token;
 
-  if (response.status === 401) {
-    // Token may have expired — clear it and retry once with fresh login
-    console.log('[Auth] Token expired, refreshing...');
-    config.jwtToken = '';
-    saveConfig(config);
-    const newToken = await ensureLoggedIn();
-    if (!newToken) return null;
-    const retry = await fetch('https://api.opensubtitles.com/api/v1/download', {
-      method: 'POST',
-      headers: { ...headers, 'Authorization': `Bearer ${newToken}` },
-      body: JSON.stringify({ file_id: fileId }),
-    });
-    if (!retry.ok) return null;
-    const retryData = await retry.json();
-    return retryData.link || null;
-  }
-
-  if (!response.ok) {
-    console.error('[Download] Failed:', response.status, await response.text());
+    const res = await os.download(opts);
+    if (res?.link) {
+      console.log(`[Download] OK — remaining quota: ${res.remaining ?? '?'}`);
+      return res.link;
+    }
+    console.error('[Download] No link in response:', JSON.stringify(res));
+    return null;
+  } catch (e) {
+    // Token may have expired — clear and retry once
+    if (e.message?.includes('401') || e.message?.includes('token')) {
+      console.log('[Auth] Token expired, refreshing...');
+      config.jwtToken = '';
+      saveConfig(config);
+      const newToken = await ensureLoggedIn();
+      if (!newToken) return null;
+      try {
+        const retry = await os.download({ file_id: fileId, token: newToken });
+        if (retry?.link) {
+          console.log(`[Download] Retry OK — remaining quota: ${retry.remaining ?? '?'}`);
+          return retry.link;
+        }
+      } catch (e2) { console.error('[Download] Retry failed:', e2.message); }
+    } else {
+      console.error('[Download] Error:', e.message);
+    }
     return null;
   }
-  const data = await response.json();
-  console.log(`[Download] Remaining quota: ${data.remaining}`);
-  return data.link || null;
 }
 
 // ── Web UI (configure page) ───────────────────────────────────────────────────
@@ -306,13 +295,14 @@ app.get('/api/status', (req, res) => res.json({ configured: !!getApiKey() }));
 app.get('/api/test-key', async (req, res) => {
   if (!getApiKey()) return res.json({ ok: false, error: 'No API key configured' });
   try {
-    const r = await fetch('https://api.opensubtitles.com/api/v1/subtitles?imdb_id=133093&languages=en', {
-      headers: { 'Api-Key': getApiKey(), 'User-Agent': 'StremioForcedSubtitles/1.0' },
-    });
-    if (r.status === 401) return res.json({ ok: false, error: 'Invalid API key (401 Unauthorized)' });
-    if (!r.ok) return res.json({ ok: false, error: `API returned ${r.status}` });
+    const os = getOSClient();
+    await os.subtitles({ imdb_id: '133093', languages: 'en' });
     res.json({ ok: true });
-  } catch (e) { res.json({ ok: false, error: e.message }); }
+  } catch (e) {
+    const msg = e.message || '';
+    if (msg.includes('401') || msg.includes('403')) return res.json({ ok: false, error: 'Invalid API key or User-Agent rejected' });
+    res.json({ ok: false, error: msg });
+  }
 });
 
 // ── Subtitle proxy endpoint ───────────────────────────────────────────────────
@@ -337,7 +327,10 @@ app.get('/subs/:fileId', async (req, res) => {
     console.log(`[Proxy] Download URL obtained — fetching subtitle file...`);
 
     const subResponse = await fetch(downloadUrl, {
-      headers: { 'User-Agent': 'StremioForcedSubtitles/1.0' },
+      headers: {
+        'User-Agent': 'StremioForcedSubtitles/1.0',
+        'Accept-Encoding': 'identity', // request uncompressed so we can serve it directly
+      },
     });
 
     if (!subResponse.ok) {
@@ -345,15 +338,18 @@ app.get('/subs/:fileId', async (req, res) => {
       return res.status(502).send('Could not fetch subtitle file');
     }
 
-    const contentType = subResponse.headers.get('content-type') || 'text/plain';
-    const contentLength = subResponse.headers.get('content-length');
-    console.log(`[Proxy] ✓ Streaming subtitle to Stremio (type=${contentType}${contentLength ? ', size=' + Math.round(contentLength/1024) + 'KB' : ''})`);
+    // Read the full content so we can inspect and re-serve it cleanly
+    const subText = await subResponse.text();
+    const contentEncoding = subResponse.headers.get('content-encoding') || 'none';
+    console.log(`[Proxy] ✓ Subtitle received (${(subText.length/1024).toFixed(1)} KB, encoding=${contentEncoding})`);
 
-    res.setHeader('Content-Type', contentType);
+    // Always serve as plain UTF-8 text so Stremio can parse it
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
-    subResponse.body.pipe(res);
+    res.setHeader('Content-Length', Buffer.byteLength(subText, 'utf8'));
+    res.send(subText);
 
-    res.on('finish', () => console.log(`[Proxy] ✓ Subtitle delivery complete for fileId=${fileId}`));
+    console.log(`[Proxy] ✓ Subtitle delivery complete for fileId=${fileId}`);
   } catch (e) {
     console.error(`[Proxy] ✗ Error: ${e.message}`);
     res.status(500).send('Proxy error');
