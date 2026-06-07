@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 
-const VERSION = '1.2.8';
+const VERSION = '1.2.9';
 
 // Timestamped logging
 const log  = (...a) => console.log(`[${new Date().toTimeString().slice(0,8)}]`, ...a);
@@ -164,10 +164,11 @@ async function findForcedSubtitle(imdbId, season, episode, type) {
     log(`  ✗ Could not fetch subtitle to verify line count — skipping`);
     return [];
   }
-  if (lineCount > 500) {
-    log(`  ⚠️  Warning: subtitle file is ${lineCount} lines long — possibly not foreign language parts only`);
-  } else if (lineCount > 150) {
-    log(`  ⚠️  Warning: subtitle file is ${lineCount} lines long — may contain more than just forced dialogue`);
+  if (lineCount > 800) {
+    log(`  ✗ Rejected: ${lineCount} lines — exceeds 800 line threshold, likely a full subtitle not forced`);
+    return [];
+  } else if (lineCount > 400) {
+    log(`  ⚠️  Warning: ${lineCount} lines — higher than expected for forced subtitles, proceeding anyway`);
   } else {
     log(`  ✓ Line count looks good (${lineCount} lines)`);
   }
