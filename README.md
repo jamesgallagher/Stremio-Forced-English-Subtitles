@@ -65,10 +65,12 @@ In Cloudflare Zero Trust dashboard:
 
 Browse to `https://forced-subs.yourdomain.com/configure` and enter your:
 - **API Key** — from [opensubtitles.com/en/consumers](https://www.opensubtitles.com/en/consumers)
-- **Username** — your OpenSubtitles.com login username
+- **Username** — your OpenSubtitles.com **username** (not your email address — use the username shown on your profile page)
 - **Password** — your OpenSubtitles.com login password
 
 All three are required. The username and password are needed to authenticate downloads.
+
+> **Note:** Use your OpenSubtitles **username**, not your email address. You can find your username by logging into opensubtitles.com and checking your profile page.
 
 ### 5. Install in Stremio
 

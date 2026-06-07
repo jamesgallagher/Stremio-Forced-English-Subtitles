@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 
-const VERSION = '1.2.0';
+const VERSION = '1.2.2';
 const PORT = process.env.PORT || 7000;
 const CONFIG_DIR = process.env.CONFIG_DIR || __dirname;
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
@@ -338,18 +338,16 @@ app.get('/subs/:fileId', async (req, res) => {
       return res.status(502).send('Could not fetch subtitle file');
     }
 
-    // Read the full content so we can inspect and re-serve it cleanly
     const subText = await subResponse.text();
-    const contentEncoding = subResponse.headers.get('content-encoding') || 'none';
-    console.log(`[Proxy] ✓ Subtitle received (${(subText.length/1024).toFixed(1)} KB, encoding=${contentEncoding})`);
+    console.log(`[Proxy] ✓ Subtitle received (${(subText.length/1024).toFixed(1)} KB) — serving raw SRT for Stremio to convert`);
 
-    // Always serve as plain UTF-8 text so Stremio can parse it
+    // Serve as plain SRT — Stremio's 127.0.0.1:11470 pipeline handles SRT→VTT conversion
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Content-Length', Buffer.byteLength(subText, 'utf8'));
     res.send(subText);
 
-    console.log(`[Proxy] ✓ Subtitle delivery complete for fileId=${fileId}`);
+    console.log(`[Proxy] ✓ SRT delivered for fileId=${fileId}`);
   } catch (e) {
     console.error(`[Proxy] ✗ Error: ${e.message}`);
     res.status(500).send('Proxy error');
