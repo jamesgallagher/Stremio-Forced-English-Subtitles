@@ -5,12 +5,12 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 
-const VERSION = '1.2.4';
+const VERSION = '1.2.5';
 
 // Timestamped logging
-const log  = (...a) => log(`[${new Date().toTimeString().slice(0,8)}]`, ...a);
-const logW = (...a) => logW(`[${new Date().toTimeString().slice(0,8)}] ⚠️ `, ...a);
-const logE = (...a) => logE(`[${new Date().toTimeString().slice(0,8)}] ✗`, ...a);
+const log  = (...a) => console.log(`[${new Date().toTimeString().slice(0,8)}]`, ...a);
+const logW = (...a) => console.warn(`[${new Date().toTimeString().slice(0,8)}] ⚠️ `, ...a);
+const logE = (...a) => console.error(`[${new Date().toTimeString().slice(0,8)}] ✗`, ...a);
 const PORT = process.env.PORT || 7000;
 const CONFIG_DIR = process.env.CONFIG_DIR || __dirname;
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
