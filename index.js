@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 
-const VERSION = '1.1.1';
+const VERSION = '1.1.3';
 const PORT = process.env.PORT || 7000;
 const CONFIG_DIR = process.env.CONFIG_DIR || __dirname;
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
@@ -119,21 +119,60 @@ async function findForcedSubtitle(imdbId, season, episode, type) {
   const uploadDate = best.attributes?.upload_date?.slice(0, 10) || '';
   if (!fileId) return [];
 
-  const downloadUrl = await getDownloadUrl(fileId);
-  if (!downloadUrl) return [];
+  // Verify line count now (using a fresh temporary URL) to confirm it's genuinely forced
+  // We fetch it here just to count lines, then discard the URL
+  // When Stremio actually needs the subtitle, it hits our /subs/:fileId endpoint
+  // which fetches a fresh non-expired URL on demand
+  const tempUrl = await getDownloadUrl(fileId);
+  if (!tempUrl) return [];
 
-  // Wrap through Stremio's local VTT proxy so it can handle encoding conversion
-  // This is the recommended approach per Stremio addon SDK docs
-  const proxiedUrl = `http://127.0.0.1:11470/subtitles.vtt?from=${encodeURIComponent(downloadUrl)}`;
+  const lineCount = await countSubtitleLines(tempUrl);
+  if (lineCount === null) {
+    console.log(`  ✗ Could not fetch subtitle to verify line count — skipping`);
+    return [];
+  }
+  console.log(`  Line count: ${lineCount}`);
+  if (lineCount > 150) {
+    console.log(`  ✗ Rejected: too many lines (${lineCount}) — looks like a full subtitle, not forced`);
+    return [];
+  }
 
-  console.log(`  ✓ Subtitle URL: ${downloadUrl.slice(0, 60)}...`);
+  console.log(`  ✓ Verified forced subtitle (${lineCount} lines) — returning track`);
+
+  // Return a URL that points to our own proxy endpoint
+  // This fetches a FRESH download URL from OpenSubtitles when Stremio actually requests the file
+  // preventing the "expired URL" problem
+  const ourProxyUrl = `${process.env.PUBLIC_URL || 'http://127.0.0.1:7000'}/subs/${fileId}`;
 
   return [{
     id: `forced-en-${fileId}`,
-    url: proxiedUrl,
+    url: ourProxyUrl,
     lang: 'eng',
     id_prefix: `[Forced] ${releaseName}${uploadDate ? ' · ' + uploadDate : ''}`,
   }];
+}
+
+async function countSubtitleLines(url) {
+  try {
+    const response = await fetch(url, {
+      headers: { 'User-Agent': 'StremioForcedSubtitles/1.0' },
+    });
+    if (!response.ok) return null;
+    const text = await response.text();
+    // Count non-empty lines that aren't timestamps or sequence numbers
+    // SRT format: sequence number, timestamp, text lines, blank line
+    const lines = text.split('\n').filter(l => {
+      const trimmed = l.trim();
+      if (!trimmed) return false;                          // blank
+      if (/^\d+$/.test(trimmed)) return false;           // sequence number
+      if (/-->/.test(trimmed)) return false;              // timestamp
+      return true;                                         // actual subtitle text
+    });
+    return lines.length;
+  } catch (e) {
+    console.log(`  Warning: could not fetch subtitle for line count: ${e.message}`);
+    return null;
+  }
 }
 
 async function getDownloadUrl(fileId) {
@@ -204,6 +243,39 @@ app.get('/api/test-key', async (req, res) => {
     if (!r.ok) return res.json({ ok: false, error: `API returned ${r.status}` });
     res.json({ ok: true });
   } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
+// ── Subtitle proxy endpoint ───────────────────────────────────────────────────
+// Fetches a fresh download URL from OpenSubtitles on demand and streams the file
+// This avoids the expired URL problem with OpenSubtitles temporary download links
+app.get('/subs/:fileId', async (req, res) => {
+  const { fileId } = req.params;
+  console.log(`[Proxy] Fresh download request for fileId=${fileId}`);
+
+  if (!getApiKey()) return res.status(503).send('No API key configured');
+
+  try {
+    const downloadUrl = await getDownloadUrl(fileId);
+    if (!downloadUrl) return res.status(404).send('Could not get download URL');
+
+    // Fetch the actual subtitle file and stream it back
+    const subResponse = await fetch(downloadUrl, {
+      headers: { 'User-Agent': 'StremioForcedSubtitles/1.0' },
+    });
+
+    if (!subResponse.ok) return res.status(502).send('Could not fetch subtitle file');
+
+    // Forward content type and stream the response
+    const contentType = subResponse.headers.get('content-type') || 'text/plain';
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    subResponse.body.pipe(res);
+
+    console.log(`[Proxy] Streamed subtitle for fileId=${fileId}`);
+  } catch (e) {
+    console.error(`[Proxy] Error: ${e.message}`);
+    res.status(500).send('Proxy error');
+  }
 });
 
 // Mount the addon SDK router — this handles /manifest.json and /subtitles/:type/:id.json
