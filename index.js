@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 
-const VERSION = '1.2.9';
+const VERSION = '1.3.0';
 
 // Timestamped logging
 const log  = (...a) => console.log(`[${new Date().toTimeString().slice(0,8)}]`, ...a);
@@ -139,53 +139,60 @@ async function findForcedSubtitle(imdbId, season, episode, type) {
   if (results.length === 0) { log(`  No results from OpenSubtitles`); return []; }
 
   log(`  ${results.length} candidate(s) — checking metadata flag then keywords...`);
-  const best = results.find(r => isForced(r));
-  if (!best) { log(`  ✗ No forced subtitle found — suppressing subtitles`); return []; }
 
-  const fileId = best.attributes?.files?.[0]?.file_id;
-  const releaseName = best.attributes?.release || 'Forced';
-  const uploadDate = best.attributes?.upload_date?.slice(0, 10) || '';
-  if (!fileId) return [];
-
-  // Verify line count now (using a fresh temporary URL) to confirm it's genuinely forced
-  // We fetch it here just to count lines, then discard the URL
-  // When Stremio actually needs the subtitle, it hits our /subs/:fileId endpoint
-  // which fetches a fresh non-expired URL on demand
-  log(`  Fetching download URL for fileId=${fileId}...`);
-  const tempUrl = await getDownloadUrl(fileId);
-  if (!tempUrl) {
-    log(`  ✗ Failed to get download URL — check credentials and quota`);
+  // Get all candidates that pass the forced filter, then verify each by line count
+  // If a candidate fails the line count check, try the next one
+  const forcedCandidates = results.filter(r => isForced(r));
+  if (forcedCandidates.length === 0) {
+    log(`  ✗ No forced subtitle found — suppressing subtitles`);
     return [];
   }
-  log(`  Download URL obtained — fetching subtitle to verify line count...`);
 
-  const lineCount = await countSubtitleLines(tempUrl);
-  if (lineCount === null) {
-    log(`  ✗ Could not fetch subtitle to verify line count — skipping`);
-    return [];
+  log(`  ${forcedCandidates.length} candidate(s) passed forced filter — verifying line counts...`);
+
+  for (const candidate of forcedCandidates) {
+    const fileId = candidate.attributes?.files?.[0]?.file_id;
+    const releaseName = candidate.attributes?.release || 'Forced';
+    const uploadDate = candidate.attributes?.upload_date?.slice(0, 10) || '';
+    if (!fileId) { log(`  ✗ No fileId for "${releaseName}" — skipping`); continue; }
+
+    log(`  Checking "${releaseName}" (fileId=${fileId})...`);
+
+    const tempUrl = await getDownloadUrl(fileId);
+    if (!tempUrl) {
+      log(`  ✗ Failed to get download URL — skipping`);
+      continue;
+    }
+
+    const lineCount = await countSubtitleLines(tempUrl);
+    if (lineCount === null) {
+      log(`  ✗ Could not fetch subtitle to verify line count — skipping`);
+      continue;
+    }
+
+    if (lineCount > 800) {
+      log(`  ✗ Rejected: ${lineCount} lines — exceeds 800 line threshold, trying next candidate...`);
+      continue;
+    } else if (lineCount > 400) {
+      log(`  ⚠️  Warning: ${lineCount} lines — higher than expected but under threshold, proceeding`);
+    } else {
+      log(`  ✓ Line count looks good (${lineCount} lines)`);
+    }
+
+    // This candidate passed all checks — return it
+    const ourProxyUrl = `${process.env.PUBLIC_URL || 'http://127.0.0.1:7000'}/subs/${fileId}`;
+    log(`  ➤ Subtitle URL being returned to Stremio: ${ourProxyUrl}`);
+
+    return [{
+      id: `forced-en-${fileId}`,
+      url: ourProxyUrl,
+      lang: 'eng',
+      id_prefix: `[Forced] ${releaseName}${uploadDate ? ' · ' + uploadDate : ''}`,
+    }];
   }
-  if (lineCount > 800) {
-    log(`  ✗ Rejected: ${lineCount} lines — exceeds 800 line threshold, likely a full subtitle not forced`);
-    return [];
-  } else if (lineCount > 400) {
-    log(`  ⚠️  Warning: ${lineCount} lines — higher than expected for forced subtitles, proceeding anyway`);
-  } else {
-    log(`  ✓ Line count looks good (${lineCount} lines)`);
-  }
-  log(`  Returning track — use subtitle picker to verify it looks correct`);
 
-  // Return a URL that points to our own proxy endpoint
-  // This fetches a FRESH download URL from OpenSubtitles when Stremio actually requests the file
-  // preventing the "expired URL" problem
-  const ourProxyUrl = `${process.env.PUBLIC_URL || 'http://127.0.0.1:7000'}/subs/${fileId}`;
-  log(`  ➤ Subtitle URL being returned to Stremio: ${ourProxyUrl}`);
-
-  return [{
-    id: `forced-en-${fileId}`,
-    url: ourProxyUrl,
-    lang: 'eng',
-    id_prefix: `[Forced] ${releaseName}${uploadDate ? ' · ' + uploadDate : ''}`,
-  }];
+  log(`  ✗ All forced candidates failed line count check — suppressing subtitles`);
+  return [];
 }
 
 async function countSubtitleLines(url) {
