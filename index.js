@@ -5,7 +5,12 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 
-const VERSION = '1.2.3';
+const VERSION = '1.2.4';
+
+// Timestamped logging
+const log  = (...a) => log(`[${new Date().toTimeString().slice(0,8)}]`, ...a);
+const logW = (...a) => logW(`[${new Date().toTimeString().slice(0,8)}] ⚠️ `, ...a);
+const logE = (...a) => logE(`[${new Date().toTimeString().slice(0,8)}] ✗`, ...a);
 const PORT = process.env.PORT || 7000;
 const CONFIG_DIR = process.env.CONFIG_DIR || __dirname;
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
@@ -39,17 +44,17 @@ async function ensureLoggedIn() {
   if (getJwtToken()) return getJwtToken();
   if (!getUsername() || !getPassword()) return null;
   try {
-    console.log('[Auth] Logging in to OpenSubtitles...');
+    log('[Auth] Logging in to OpenSubtitles...');
     const os = getOSClient();
     const res = await os.login({ username: getUsername(), password: getPassword() });
     if (res?.token) {
       config.jwtToken = res.token;
       saveConfig(config);
-      console.log('[Auth] Login successful, token cached');
+      log('[Auth] Login successful, token cached');
       return res.token;
     }
-    console.error('[Auth] Login returned no token');
-  } catch (e) { console.error('[Auth] Login error:', e.message); }
+    logE('[Auth] Login returned no token');
+  } catch (e) { logE('[Auth] Login error:', e.message); }
   return null;
 }
 
@@ -66,19 +71,19 @@ const builder = new addonBuilder({
 
 builder.defineSubtitlesHandler(async ({ type, id }) => {
   const [imdbId, season, episode] = id.split(':');
-  console.log(`[Request] type=${type} id=${id}`);
+  log(`[Request] type=${type} id=${id}`);
 
   if (!getApiKey() || !getUsername() || !getPassword()) {
-    console.log('  Not fully configured (need API key + username + password) — returning empty');
+    log('  Not fully configured (need API key + username + password) — returning empty');
     return { subtitles: [] };
   }
 
   try {
     const subtitles = await findForcedSubtitle(imdbId, season, episode, type);
-    console.log(`[Result] ${subtitles.length} subtitle(s) for ${imdbId}`);
+    log(`[Result] ${subtitles.length} subtitle(s) for ${imdbId}`);
     return { subtitles };
   } catch (err) {
-    console.error(`[Error] ${err.message}`);
+    logE(`[Error] ${err.message}`);
     return { subtitles: [] };
   }
 });
@@ -98,7 +103,7 @@ function isForced(result) {
   const releaseName = (attrs.release || attrs.files?.[0]?.file_name || '').toLowerCase();
 
   if (attrs.foreign_parts_only === true) {
-    console.log(`  ✓ Accepted via metadata flag: "${attrs.release || '(unnamed)'}"`);
+    log(`  ✓ Accepted via metadata flag: "${attrs.release || '(unnamed)'}"`);
     return true;
   }
 
@@ -106,11 +111,11 @@ function isForced(result) {
   const hasExclude = EXCLUDE_KEYWORDS.some(k => releaseName.includes(k));
 
   if (hasForced && !hasExclude) {
-    console.log(`  ✓ Accepted via keyword: "${attrs.release || '(unnamed)'}"`);
+    log(`  ✓ Accepted via keyword: "${attrs.release || '(unnamed)'}"`);
     return true;
   }
 
-  console.log(`  ✗ Rejected: "${attrs.release || '(unnamed)'}" (flag=${attrs.foreign_parts_only}, forced=${hasForced}, exclude=${hasExclude})`);
+  log(`  ✗ Rejected: "${attrs.release || '(unnamed)'}" (flag=${attrs.foreign_parts_only}, forced=${hasForced}, exclude=${hasExclude})`);
   return false;
 }
 
@@ -131,11 +136,11 @@ async function findForcedSubtitle(imdbId, season, episode, type) {
   const data = await os.subtitles(query);
   const results = data.data || [];
 
-  if (results.length === 0) { console.log(`  No results from OpenSubtitles`); return []; }
+  if (results.length === 0) { log(`  No results from OpenSubtitles`); return []; }
 
-  console.log(`  ${results.length} candidate(s) — checking metadata flag then keywords...`);
+  log(`  ${results.length} candidate(s) — checking metadata flag then keywords...`);
   const best = results.find(r => isForced(r));
-  if (!best) { console.log(`  ✗ No forced subtitle found — suppressing subtitles`); return []; }
+  if (!best) { log(`  ✗ No forced subtitle found — suppressing subtitles`); return []; }
 
   const fileId = best.attributes?.files?.[0]?.file_id;
   const releaseName = best.attributes?.release || 'Forced';
@@ -146,27 +151,27 @@ async function findForcedSubtitle(imdbId, season, episode, type) {
   // We fetch it here just to count lines, then discard the URL
   // When Stremio actually needs the subtitle, it hits our /subs/:fileId endpoint
   // which fetches a fresh non-expired URL on demand
-  console.log(`  Fetching download URL for fileId=${fileId}...`);
+  log(`  Fetching download URL for fileId=${fileId}...`);
   const tempUrl = await getDownloadUrl(fileId);
   if (!tempUrl) {
-    console.log(`  ✗ Failed to get download URL — check credentials and quota`);
+    log(`  ✗ Failed to get download URL — check credentials and quota`);
     return [];
   }
-  console.log(`  Download URL obtained — fetching subtitle to verify line count...`);
+  log(`  Download URL obtained — fetching subtitle to verify line count...`);
 
   const lineCount = await countSubtitleLines(tempUrl);
   if (lineCount === null) {
-    console.log(`  ✗ Could not fetch subtitle to verify line count — skipping`);
+    log(`  ✗ Could not fetch subtitle to verify line count — skipping`);
     return [];
   }
   if (lineCount > 500) {
-    console.log(`  ⚠️  Warning: subtitle file is ${lineCount} lines long — possibly not foreign language parts only`);
+    log(`  ⚠️  Warning: subtitle file is ${lineCount} lines long — possibly not foreign language parts only`);
   } else if (lineCount > 150) {
-    console.log(`  ⚠️  Warning: subtitle file is ${lineCount} lines long — may contain more than just forced dialogue`);
+    log(`  ⚠️  Warning: subtitle file is ${lineCount} lines long — may contain more than just forced dialogue`);
   } else {
-    console.log(`  ✓ Line count looks good (${lineCount} lines)`);
+    log(`  ✓ Line count looks good (${lineCount} lines)`);
   }
-  console.log(`  Returning track — use subtitle picker to verify it looks correct`);
+  log(`  Returning track — use subtitle picker to verify it looks correct`);
 
   // Return a URL that points to our own proxy endpoint
   // This fetches a FRESH download URL from OpenSubtitles when Stremio actually requests the file
@@ -187,12 +192,12 @@ async function countSubtitleLines(url) {
       headers: { 'User-Agent': 'StremioForcedSubtitles/1.0' },
     });
     if (!response.ok) {
-      console.log(`  ✗ Subtitle fetch failed: HTTP ${response.status}`);
+      log(`  ✗ Subtitle fetch failed: HTTP ${response.status}`);
       return null;
     }
     const text = await response.text();
     const sizeKb = (text.length / 1024).toFixed(1);
-    console.log(`  Subtitle file fetched OK (${sizeKb} KB)`);
+    log(`  Subtitle file fetched OK (${sizeKb} KB)`);
     // Count non-empty lines that aren't timestamps or sequence numbers
     // SRT format: sequence number, timestamp, text lines, blank line
     const lines = text.split('\n').filter(l => {
@@ -204,7 +209,7 @@ async function countSubtitleLines(url) {
     });
     return lines.length;
   } catch (e) {
-    console.log(`  Warning: could not fetch subtitle for line count: ${e.message}`);
+    log(`  Warning: could not fetch subtitle for line count: ${e.message}`);
     return null;
   }
 }
@@ -220,15 +225,15 @@ async function getDownloadUrl(fileId) {
 
     const res = await os.download(opts);
     if (res?.link) {
-      console.log(`[Download] OK — remaining quota: ${res.remaining ?? '?'}`);
+      log(`[Download] OK — remaining quota: ${res.remaining ?? '?'}`);
       return res.link;
     }
-    console.error('[Download] No link in response:', JSON.stringify(res));
+    logE('[Download] No link in response:', JSON.stringify(res));
     return null;
   } catch (e) {
     // Token may have expired — clear and retry once
     if (e.message?.includes('401') || e.message?.includes('token')) {
-      console.log('[Auth] Token expired, refreshing...');
+      log('[Auth] Token expired, refreshing...');
       config.jwtToken = '';
       saveConfig(config);
       const newToken = await ensureLoggedIn();
@@ -236,12 +241,12 @@ async function getDownloadUrl(fileId) {
       try {
         const retry = await os.download({ file_id: fileId, token: newToken });
         if (retry?.link) {
-          console.log(`[Download] Retry OK — remaining quota: ${retry.remaining ?? '?'}`);
+          log(`[Download] Retry OK — remaining quota: ${retry.remaining ?? '?'}`);
           return retry.link;
         }
-      } catch (e2) { console.error('[Download] Retry failed:', e2.message); }
+      } catch (e2) { logE('[Download] Retry failed:', e2.message); }
     } else {
-      console.error('[Download] Error:', e.message);
+      logE('[Download] Error:', e.message);
     }
     return null;
   }
@@ -286,7 +291,7 @@ app.post('/configure', (req, res) => {
   // Clear cached JWT so it re-authenticates with new credentials
   config.jwtToken = '';
   saveConfig(config);
-  console.log('[Config] Settings saved');
+  log('[Config] Settings saved');
   res.redirect('/configure?saved=1');
 });
 
@@ -305,26 +310,31 @@ app.get('/api/test-key', async (req, res) => {
   }
 });
 
+// ── SRT → VTT converter ──────────────────────────────────────────────────────
+function srtToVtt(srt) {
+  const normalised = srt.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const converted = normalised.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
+  return 'WEBVTT\n\n' + converted.trim();
+}
+
 // ── Subtitle proxy endpoint ───────────────────────────────────────────────────
-// Fetches a fresh download URL from OpenSubtitles on demand and streams the file
-// This avoids the expired URL problem with OpenSubtitles temporary download links
 app.get('/subs/:fileId.vtt', async (req, res) => {
   const { fileId } = req.params;
-  console.log(`[Proxy] Stremio requested subtitle file for fileId=${fileId}`);
+  log(`[Proxy] Stremio requested subtitle file for fileId=${fileId}`);
 
   if (!getApiKey()) {
-    console.log(`[Proxy] ✗ No API key configured`);
+    log(`[Proxy] ✗ No API key configured`);
     return res.status(503).send('No API key configured');
   }
 
   try {
-    console.log(`[Proxy] Fetching fresh download URL from OpenSubtitles...`);
+    log(`[Proxy] Fetching fresh download URL from OpenSubtitles...`);
     const downloadUrl = await getDownloadUrl(fileId);
     if (!downloadUrl) {
-      console.log(`[Proxy] ✗ Could not get download URL — check credentials and quota`);
+      log(`[Proxy] ✗ Could not get download URL — check credentials and quota`);
       return res.status(404).send('Could not get download URL');
     }
-    console.log(`[Proxy] Download URL obtained — fetching subtitle file...`);
+    log(`[Proxy] Download URL obtained — fetching subtitle file...`);
 
     const subResponse = await fetch(downloadUrl, {
       headers: {
@@ -334,12 +344,12 @@ app.get('/subs/:fileId.vtt', async (req, res) => {
     });
 
     if (!subResponse.ok) {
-      console.log(`[Proxy] ✗ Subtitle file fetch failed: HTTP ${subResponse.status}`);
+      log(`[Proxy] ✗ Subtitle file fetch failed: HTTP ${subResponse.status}`);
       return res.status(502).send('Could not fetch subtitle file');
     }
 
     const subText = await subResponse.text();
-    console.log(`[Proxy] ✓ Subtitle received (${(subText.length/1024).toFixed(1)} KB) — converting to VTT`);
+    log(`[Proxy] ✓ Subtitle received (${(subText.length/1024).toFixed(1)} KB) — converting to VTT`);
 
     // Convert SRT → VTT and serve directly — same pattern as clockrr addon
     const vttContent = srtToVtt(subText);
@@ -349,9 +359,9 @@ app.get('/subs/:fileId.vtt', async (req, res) => {
     res.setHeader('Content-Length', Buffer.byteLength(vttContent, 'utf8'));
     res.send(vttContent);
 
-    console.log(`[Proxy] ✓ VTT delivered directly for fileId=${fileId}`);
+    log(`[Proxy] ✓ VTT delivered directly for fileId=${fileId}`);
   } catch (e) {
-    console.error(`[Proxy] ✗ Error: ${e.message}`);
+    logE(`[Proxy] ✗ Error: ${e.message}`);
     res.status(500).send('Proxy error');
   }
 });
@@ -360,11 +370,11 @@ app.get('/subs/:fileId.vtt', async (req, res) => {
 app.use('/', addonRouter);
 
 app.listen(PORT, () => {
-  console.log(`\n✅ English Forced Subtitles add-on v${VERSION} starting...`);
-  console.log(`   Web UI:   http://127.0.0.1:${PORT}/`);
-  console.log(`   Config:   http://127.0.0.1:${PORT}/configure`);
-  console.log(`   Manifest: http://127.0.0.1:${PORT}/manifest.json\n`);
-  if (!getApiKey()) console.warn(`⚠️  No API key set — visit http://127.0.0.1:${PORT}/configure to add one\n`);
+  log(`\n✅ English Forced Subtitles add-on v${VERSION} starting...`);
+  log(`   Web UI:   http://127.0.0.1:${PORT}/`);
+  log(`   Config:   http://127.0.0.1:${PORT}/configure`);
+  log(`   Manifest: http://127.0.0.1:${PORT}/manifest.json\n`);
+  if (!getApiKey()) logW(`⚠️  No API key set — visit http://127.0.0.1:${PORT}/configure to add one\n`);
 });
 
 // ── HTML Pages ────────────────────────────────────────────────────────────────
