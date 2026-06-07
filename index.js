@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 
-const VERSION = '1.2.2';
+const VERSION = '1.2.3';
 const PORT = process.env.PORT || 7000;
 const CONFIG_DIR = process.env.CONFIG_DIR || __dirname;
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
@@ -171,7 +171,7 @@ async function findForcedSubtitle(imdbId, season, episode, type) {
   // Return a URL that points to our own proxy endpoint
   // This fetches a FRESH download URL from OpenSubtitles when Stremio actually requests the file
   // preventing the "expired URL" problem
-  const ourProxyUrl = `${process.env.PUBLIC_URL || 'http://127.0.0.1:7000'}/subs/${fileId}`;
+  const ourProxyUrl = `${process.env.PUBLIC_URL || 'http://127.0.0.1:7000'}/subs/${fileId}.vtt`;
 
   return [{
     id: `forced-en-${fileId}`,
@@ -308,7 +308,7 @@ app.get('/api/test-key', async (req, res) => {
 // ── Subtitle proxy endpoint ───────────────────────────────────────────────────
 // Fetches a fresh download URL from OpenSubtitles on demand and streams the file
 // This avoids the expired URL problem with OpenSubtitles temporary download links
-app.get('/subs/:fileId', async (req, res) => {
+app.get('/subs/:fileId.vtt', async (req, res) => {
   const { fileId } = req.params;
   console.log(`[Proxy] Stremio requested subtitle file for fileId=${fileId}`);
 
@@ -339,15 +339,17 @@ app.get('/subs/:fileId', async (req, res) => {
     }
 
     const subText = await subResponse.text();
-    console.log(`[Proxy] ✓ Subtitle received (${(subText.length/1024).toFixed(1)} KB) — serving raw SRT for Stremio to convert`);
+    console.log(`[Proxy] ✓ Subtitle received (${(subText.length/1024).toFixed(1)} KB) — converting to VTT`);
 
-    // Serve as plain SRT — Stremio's 127.0.0.1:11470 pipeline handles SRT→VTT conversion
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    // Convert SRT → VTT and serve directly — same pattern as clockrr addon
+    const vttContent = srtToVtt(subText);
+
+    res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Content-Length', Buffer.byteLength(subText, 'utf8'));
-    res.send(subText);
+    res.setHeader('Content-Length', Buffer.byteLength(vttContent, 'utf8'));
+    res.send(vttContent);
 
-    console.log(`[Proxy] ✓ SRT delivered for fileId=${fileId}`);
+    console.log(`[Proxy] ✓ VTT delivered directly for fileId=${fileId}`);
   } catch (e) {
     console.error(`[Proxy] ✗ Error: ${e.message}`);
     res.status(500).send('Proxy error');
